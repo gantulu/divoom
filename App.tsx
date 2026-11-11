@@ -81,7 +81,7 @@ const INITIAL_CHAT_MESSAGES = [
 // --- MAIN APPLICATION COMPONENT ---
 export default function App() {
   // Navigation State
-  const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'catalog' | 'detail' | 'cart' | 'profile' | 'livechat'
+  const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'catalog' | 'detail' | 'cart' | 'checkout' | 'profile' | 'livechat'
   const [selectedProductGroupId, setSelectedProductGroupId] = useState(null);
   const [selectedVariantId, setSelectedVariantId] = useState(null);
   const [activeCategory, setActiveCategory] = useState('All');
@@ -297,7 +297,7 @@ export default function App() {
           onCartClick={() => navigateTo('cart')}
           onProfileClick={() => navigateTo('profile')}
           onBrandClick={() => navigateTo('home')}
-          onBackClick={() => navigateTo('catalog')}
+          onBackClick={() => navigateTo(currentPage === 'checkout' ? 'cart' : 'catalog')}
         />
 
         {/* MAIN SCROLLABLE CONTENT REGION - Flex-1 and Scrollable */}
@@ -357,6 +357,10 @@ export default function App() {
             />
           )}
 
+          {currentPage === 'checkout' && (
+            <CheckoutPage cart={cart} subtotal={cartSubtotal} onBack={() => navigateTo('cart')} />
+          )}
+
           {currentPage === 'profile' && (
             <ProfilePage 
               wishlistCount={wishlist.length}
@@ -392,8 +396,9 @@ export default function App() {
           <CartBottomActionBar 
             subtotal={cartSubtotal}
             cartLength={cart.length}
+            onCheckout={() => navigateTo('checkout')}
           />
-        ) : (
+        ) : currentPage === 'checkout' ? null : (
           <BottomNav currentPage={currentPage} onNavigate={navigateTo} />
         )}
 
@@ -405,18 +410,19 @@ export default function App() {
 // --- HEADER COMPONENT ---
 function Header({ currentPage, cartCount, onCartClick, onProfileClick, onBrandClick, onBackClick }) {
   const isDetailPage = currentPage === 'detail';
+  const isCheckoutPage = currentPage === 'checkout';
 
   return (
     <header className="shrink-0 bg-neutral-900 border-b border-neutral-800/80 px-4 py-3 flex items-center justify-between text-white z-30 shadow-md min-h-[56px]">
       <div className="flex items-center space-x-2">
-        {isDetailPage ? (
+        {isDetailPage || isCheckoutPage ? (
           <button 
             onClick={onBackClick}
             className="p-1 -ml-1 text-neutral-300 hover:text-white flex items-center space-x-1 focus:outline-none"
-            aria-label="Back to Catalog"
+            aria-label={isCheckoutPage ? 'Back to Cart' : 'Back to Catalog'}
           >
             <ChevronLeft className="w-5 h-5 text-rose-500" />
-            <span className="text-xs uppercase tracking-wider font-semibold">Catalog</span>
+            <span className="text-xs uppercase tracking-wider font-semibold">{isCheckoutPage ? 'Cart' : 'Catalog'}</span>
           </button>
         ) : (
           <div 
@@ -907,35 +913,25 @@ function ProductBottomActionBar({ family, selectedVariant, onAddToCart }) {
 }
 
 // --- CART BOTTOM ACTION BAR ---
-function CartBottomActionBar({ subtotal, cartLength }) {
-  const [checkoutNotice, setCheckoutNotice] = useState(false);
-
+function CartBottomActionBar({ subtotal, cartLength, onCheckout }) {
   return (
-    <div className="shrink-0 bg-neutral-900 border-t border-neutral-800/80 px-4 py-3 flex flex-col space-y-2 z-30 shadow-lg">
-      {checkoutNotice && (
-        <div className="p-2 bg-amber-950/40 border border-amber-800/60 rounded-lg text-[10px] text-amber-300 flex items-center space-x-1.5">
-          <Info className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span>Checkout is disabled in this frontend demonstration environment.</span>
-        </div>
-      )}
-      <div className="flex items-center justify-between">
-        <div className="flex flex-col">
-          <span className="text-[10px] uppercase tracking-wider text-neutral-400">Subtotal ({cartLength} items)</span>
-          <span className="text-sm font-bold text-rose-400">{formatIDR(subtotal)}</span>
-        </div>
-        <button
-          onClick={() => setCheckoutNotice(true)}
-          disabled={cartLength === 0}
-          className={`font-semibold text-xs tracking-widest uppercase py-3 px-6 rounded-lg shadow-lg flex items-center space-x-2 transition-all ${
-            cartLength > 0
-              ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950 active:scale-[0.99]'
-              : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-800'
-          }`}
-        >
-          <span>Checkout</span>
-          <ArrowRight className="w-4 h-4" />
-        </button>
+    <div className="shrink-0 bg-neutral-900 border-t border-neutral-800/80 px-4 py-3 flex items-center justify-between z-30 shadow-lg">
+      <div className="flex flex-col">
+        <span className="text-[10px] uppercase tracking-wider text-neutral-400">Subtotal ({cartLength} items)</span>
+        <span className="text-sm font-bold text-rose-400">{formatIDR(subtotal)}</span>
       </div>
+      <button
+        onClick={onCheckout}
+        disabled={cartLength === 0}
+        className={`font-semibold text-xs tracking-widest uppercase py-3 px-6 rounded-lg shadow-lg flex items-center space-x-2 transition-all ${
+          cartLength > 0
+            ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950 active:scale-[0.99]'
+            : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-800'
+        }`}
+      >
+        <span>Checkout</span>
+        <ArrowRight className="w-4 h-4" />
+      </button>
     </div>
   );
 }
@@ -1048,7 +1044,169 @@ function CartPage({ cart, onUpdateQuantity, onRemoveItem, subtotal, onExplore })
   );
 }
 
-// --- 5. PROFILE PAGE ---
+// --- 5. CHECKOUT PAGE (UI-ONLY) ---
+function CheckoutPage({ cart, subtotal, onBack }) {
+  const [shippingMethod, setShippingMethod] = useState('regular');
+  const [paymentMethod, setPaymentMethod] = useState('bank_transfer');
+
+  const handleDemoSubmit = (event) => {
+    event.preventDefault();
+    // This page is intentionally UI-only: no order or payment is created.
+    window.alert('Checkout preview only. No order or payment has been created.');
+  };
+
+  const inputClass = "w-full bg-neutral-950 border border-neutral-800 rounded-lg px-3 py-3 text-xs text-white placeholder-neutral-500 focus:outline-none focus:border-rose-500";
+  const labelClass = "block text-[10px] font-semibold uppercase tracking-wider text-neutral-400 mb-1.5";
+
+  return (
+    <div className="p-4 pb-8 space-y-5">
+      <div className="flex items-start justify-between border-b border-neutral-800 pb-3">
+        <div>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white">Checkout</h2>
+          <p className="text-[10px] text-neutral-500 mt-1">Review your details before placing an order.</p>
+        </div>
+        <span className="text-[9px] uppercase tracking-wider text-rose-400 border border-rose-900/70 rounded-full px-2 py-1">Preview</span>
+      </div>
+
+      {cart.length === 0 ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900 p-6 text-center space-y-3">
+          <ShoppingBag className="w-9 h-9 mx-auto text-neutral-500" />
+          <p className="text-xs text-neutral-300">Your shopping bag is empty.</p>
+          <button type="button" onClick={onBack} className="text-xs font-semibold text-rose-400 hover:text-rose-300">Return to Cart</button>
+        </div>
+      ) : (
+        <form onSubmit={handleDemoSubmit} className="space-y-5">
+          <section className="space-y-3">
+            <div className="flex items-center space-x-2">
+              <User className="w-4 h-4 text-rose-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white">Contact Information</h3>
+            </div>
+            <div>
+              <label className={labelClass} htmlFor="checkout-name">Full Name</label>
+              <input id="checkout-name" name="name" autoComplete="name" required maxLength={100} className={inputClass} placeholder="Recipient full name" />
+            </div>
+            <div>
+              <label className={labelClass} htmlFor="checkout-email">Email Address</label>
+              <input id="checkout-email" name="email" type="email" autoComplete="email" required maxLength={150} className={inputClass} placeholder="you@example.com" />
+            </div>
+            <div>
+              <label className={labelClass} htmlFor="checkout-phone">Phone Number</label>
+              <input id="checkout-phone" name="phone" type="tel" autoComplete="tel" required maxLength={20} className={inputClass} placeholder="08xxxxxxxxxx" />
+            </div>
+          </section>
+
+          <section className="space-y-3 border-t border-neutral-800 pt-4">
+            <div className="flex items-center space-x-2">
+              <MapPin className="w-4 h-4 text-rose-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white">Shipping Address</h3>
+            </div>
+            <div>
+              <label className={labelClass} htmlFor="checkout-address">Complete Address</label>
+              <textarea id="checkout-address" name="address" autoComplete="street-address" required maxLength={500} rows={3} className={inputClass + " resize-y"} placeholder="Street, building, unit, and neighborhood" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={labelClass} htmlFor="checkout-province">Province</label>
+                <input id="checkout-province" name="province" autoComplete="address-level1" required maxLength={100} className={inputClass} placeholder="Province" />
+              </div>
+              <div>
+                <label className={labelClass} htmlFor="checkout-city">City / Regency</label>
+                <input id="checkout-city" name="city" autoComplete="address-level2" required maxLength={100} className={inputClass} placeholder="City" />
+              </div>
+              <div>
+                <label className={labelClass} htmlFor="checkout-district">District</label>
+                <input id="checkout-district" name="district" required maxLength={100} className={inputClass} placeholder="District" />
+              </div>
+              <div>
+                <label className={labelClass} htmlFor="checkout-postal">Postal Code</label>
+                <input id="checkout-postal" name="postal_code" inputMode="numeric" autoComplete="postal-code" pattern="[0-9]{5}" required maxLength={5} className={inputClass} placeholder="5 digits" />
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-3 border-t border-neutral-800 pt-4">
+            <div className="flex items-center space-x-2">
+              <Package className="w-4 h-4 text-rose-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white">Shipping Method</h3>
+            </div>
+            <div className="space-y-2">
+              <label className={`flex items-center justify-between rounded-lg border p-3 cursor-pointer ${shippingMethod === 'regular' ? 'border-rose-500 bg-rose-950/20' : 'border-neutral-800 bg-neutral-900'}`}>
+                <span className="flex items-center space-x-2">
+                  <input type="radio" name="shipping" value="regular" checked={shippingMethod === 'regular'} onChange={() => setShippingMethod('regular')} className="accent-rose-500" />
+                  <span className="text-xs text-neutral-200">Regular Shipping</span>
+                </span>
+                <span className="text-[10px] text-neutral-500">Rate unavailable</span>
+              </label>
+              <label className={`flex items-center justify-between rounded-lg border p-3 cursor-pointer ${shippingMethod === 'express' ? 'border-rose-500 bg-rose-950/20' : 'border-neutral-800 bg-neutral-900'}`}>
+                <span className="flex items-center space-x-2">
+                  <input type="radio" name="shipping" value="express" checked={shippingMethod === 'express'} onChange={() => setShippingMethod('express')} className="accent-rose-500" />
+                  <span className="text-xs text-neutral-200">Express Shipping</span>
+                </span>
+                <span className="text-[10px] text-neutral-500">Rate unavailable</span>
+              </label>
+            </div>
+          </section>
+
+          <section className="space-y-3 border-t border-neutral-800 pt-4">
+            <div className="flex items-center space-x-2">
+              <CreditCard className="w-4 h-4 text-rose-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white">Payment Method</h3>
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {[
+                { value: 'bank_transfer', label: 'Bank Transfer' },
+                { value: 'e_wallet', label: 'E-Wallet' },
+                { value: 'qris', label: 'QRIS' }
+              ].map((method) => (
+                <label key={method.value} className={`flex items-center space-x-2 rounded-lg border p-3 cursor-pointer ${paymentMethod === method.value ? 'border-rose-500 bg-rose-950/20' : 'border-neutral-800 bg-neutral-900'}`}>
+                  <input type="radio" name="payment" value={method.value} checked={paymentMethod === method.value} onChange={() => setPaymentMethod(method.value)} className="accent-rose-500" />
+                  <span className="text-xs text-neutral-200">{method.label}</span>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="space-y-3 border-t border-neutral-800 pt-4">
+            <div className="flex items-center space-x-2">
+              <ShoppingBag className="w-4 h-4 text-rose-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-white">Order Summary ({cart.length} lines)</h3>
+            </div>
+            <div className="space-y-3 rounded-xl border border-neutral-800 bg-neutral-900 p-3">
+              {cart.map((item, index) => {
+                const price = getActivePrice(item.product) ?? 0;
+                return (
+                  <div key={`${item.product.id}-${index}`} className="flex items-center justify-between space-x-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-neutral-200 truncate">{item.product.title}</p>
+                      <p className="text-[10px] text-neutral-500">{item.quantity} × {formatIDR(price)}</p>
+                    </div>
+                    <span className="text-xs font-semibold text-neutral-200 shrink-0">{formatIDR(price * item.quantity)}</span>
+                  </div>
+                );
+              })}
+              <div className="border-t border-neutral-800 pt-3 space-y-2 text-xs">
+                <div className="flex justify-between text-neutral-400"><span>Product subtotal</span><span className="text-neutral-200">{formatIDR(subtotal)}</span></div>
+                <div className="flex justify-between text-neutral-400"><span>Shipping fee</span><span className="text-neutral-500">Not calculated</span></div>
+                <div className="flex justify-between border-t border-neutral-800 pt-2 font-bold text-white"><span>Total</span><span>{formatIDR(subtotal)} + shipping</span></div>
+              </div>
+            </div>
+          </section>
+
+          <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 p-3 text-[10px] leading-relaxed text-amber-300">
+            Demo preview only. Shipping rates are not connected. Submitting this form will not create an order or process a payment.
+          </div>
+          <button type="submit" className="w-full flex items-center justify-center space-x-2 rounded-lg bg-rose-600 hover:bg-rose-500 active:scale-[0.99] px-4 py-3.5 text-xs font-bold uppercase tracking-widest text-white shadow-lg shadow-rose-950 transition-all">
+            <span>Review Checkout</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+          <button type="button" onClick={onBack} className="w-full py-2 text-xs font-semibold text-neutral-400 hover:text-white">Return to Cart</button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+// --- 6. PROFILE PAGE ---
 function ProfilePage({ wishlistCount, cartCount, onNavigate }) {
   const profileMenu = [
     { icon: Package, label: 'Order History', badge: 'Guest Session' },
@@ -1124,7 +1282,7 @@ function ProfilePage({ wishlistCount, cartCount, onNavigate }) {
   );
 }
 
-// --- 6. LIVECHAT PAGE ---
+// --- 7. LIVECHAT PAGE ---
 function LivechatPage({ messages, onSendMessage }) {
   const [inputText, setInputText] = useState('');
 
