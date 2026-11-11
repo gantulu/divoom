@@ -737,12 +737,9 @@ function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onT
   const groupId = family?.groupId;
   const [selectedImageIdx, setSelectedImageIdx] = useState(0);
   const currentVariant = variants.find(v => String(v.id) === String(selectedVariantId)) || variants[0] || null;
-  if (loading || !family || !currentVariant) {
-    return <div className="p-6 text-center text-xs text-neutral-400">Loading product details...</div>;
-  }
   const isWishlisted = wishlist.includes(groupId);
 
-  // Derive gallery images
+  // Derive gallery images before any conditional return to keep Hooks order stable.
   const images = useMemo(() => {
     const list = [];
     if (currentVariant?.image_link) list.push(currentVariant.image_link);
@@ -751,6 +748,10 @@ function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onT
     }
     return list.length > 0 ? list : ['https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=800'];
   }, [currentVariant]);
+
+  if (loading || !family || !currentVariant) {
+    return <div className="p-6 text-center text-xs text-neutral-400">Loading product details...</div>;
+  }
 
   const activePrice = (typeof currentVariant?.sale_price === 'number' && currentVariant.sale_price > 0)
     ? currentVariant.sale_price
