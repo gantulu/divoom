@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   ShoppingBag, 
   User, 
@@ -44,13 +44,32 @@ const formatIDR = (price) => {
   }).format(price);
 };
 
-// Simple HTML sanitizer fallback that strips unsafe tags for rich text
-const sanitizeHtml = (htmlString) => {
-  if (!htmlString) return '';
-  return htmlString
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/on\w+="[^"]*"/g, '')
-    .replace(/on\w+='[^']*'/g, '');
+// Normalize API values before rendering or using them in cart calculations.
+const isValidPrice = (value) => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+
+const getActivePrice = (product) => {
+  if (isValidPrice(product?.sale_price) && product.sale_price > 0) return product.sale_price;
+  return isValidPrice(product?.price) ? product.price : null;
+};
+
+const getNumericStock = (product) => {
+  const candidates = [product?.stock_quantity, product?.stock, product?.quantity];
+  const value = candidates.find((candidate) => typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0);
+  return value === undefined ? null : Math.floor(value);
+};
+
+const normalizeProduct = (product) => {
+  if (!product || typeof product !== 'object' || Array.isArray(product)) return null;
+  const hasId = (typeof product.id === 'string' && product.id.trim()) || (typeof product.id === 'number' && Number.isFinite(product.id));
+  if (!hasId || typeof product.title !== 'string' || !product.title.trim()) return null;
+  return {
+    ...product,
+    title: product.title.trim(),
+    description: typeof product.description === 'string' ? product.description : '',
+    rich_text_description: typeof product.rich_text_description === 'string' ? product.rich_text_description : '',
+    availability: typeof product.availability === 'string' ? product.availability : 'out of stock',
+    product_type: typeof product.product_type === 'string' ? product.product_type : 'Audio & Display'
+  };
 };
 
 // Initial Mock Livechat Messages
@@ -64,6 +83,7 @@ export default function App() {
   // Navigation State
   const [currentPage, setCurrentPage] = useState('home'); // 'home' | 'catalog' | 'detail' | 'cart' | 'profile' | 'livechat'
   const [selectedProductGroupId, setSelectedProductGroupId] = useState(null);
+  const [selectedVariantId, setSelectedVariantId] = useState(null);
   const [activeCategory, setActiveCategory] = useState('All');
 
   // Product API State
@@ -76,49 +96,68 @@ export default function App() {
   const [wishlist, setWishlist] = useState([]);
   const [chatMessages, setChatMessages] = useState(INITIAL_CHAT_MESSAGES);
 
-  // Toast Notification State
+  // Toast and request lifecycle refs
   const [toastMessage, setToastMessage] = useState(null);
+  const toastTimerRef = useRef(null);
+  const requestControllerRef = useRef(null);
 
   const showToast = (msg) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToastMessage(msg);
-    setTimeout(() => {
+    toastTimerRef.current = setTimeout(() => {
       setToastMessage(null);
+      toastTimerRef.current = null;
     }, 3000);
   };
 
-  // Fetch API Products
+  // Fetch API Products with cancellation to prevent stale responses.
   const fetchProducts = async () => {
+    if (requestControllerRef.current) requestControllerRef.current.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     setLoading(true);
     setApiError(null);
     try {
-      const response = await fetch(API_ENDPOINT);
-      if (!response.ok) {
-        throw new Error(`HTTP Error Status: ${response.status}`);
-      }
+      const response = await fetch(API_ENDPOINT, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP Error Status: ${response.status}`);
       const json = await response.json();
-      
+      if (controller.signal.aborted) return;
       if (json && json.success === true && Array.isArray(json.data)) {
-        setProducts(json.data);
+        const normalizedProducts = json.data.map(normalizeProduct).filter(Boolean);
+        setProducts(normalizedProducts);
+        if (json.data.length > 0 && normalizedProducts.length === 0) {
+          throw new Error('Product API returned no valid product records.');
+        }
       } else {
         throw new Error(json?.message || 'Invalid API response format received.');
       }
     } catch (err) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) return;
       console.error('Failed to fetch Divoom products:', err);
-      setApiError(err.message || 'Failed to connect to Divoom Product Service.');
+      setApiError(typeof err?.message === 'string' ? err.message : 'Failed to connect to Divoom Product Service.');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted && requestControllerRef.current === controller) {
+        setLoading(false);
+        requestControllerRef.current = null;
+      }
     }
   };
 
   useEffect(() => {
     fetchProducts();
+    return () => {
+      if (requestControllerRef.current) requestControllerRef.current.abort();
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
   // Group products by item_group_id or fallback to id
   const productFamilies = useMemo(() => {
     const map = new Map();
     products.forEach((prod) => {
-      const groupId = prod.item_group_id || prod.id;
+      const rawGroupId = prod.item_group_id || prod.id;
+      if (rawGroupId === null || rawGroupId === undefined || String(rawGroupId).trim() === '') return;
+      const groupId = String(rawGroupId);
       if (!map.has(groupId)) {
         map.set(groupId, []);
       }
@@ -153,10 +192,9 @@ export default function App() {
 
   const cartSubtotal = useMemo(() => {
     return cart.reduce((acc, item) => {
-      const activePrice = (typeof item.product.sale_price === 'number' && item.product.sale_price > 0)
-        ? item.product.sale_price
-        : item.product.price;
-      return acc + (activePrice * item.quantity);
+      const activePrice = getActivePrice(item.product);
+      const quantity = Number.isInteger(item.quantity) && item.quantity > 0 ? item.quantity : 0;
+      return acc + ((activePrice !== null ? activePrice : 0) * quantity);
     }, 0);
   }, [cart]);
 
@@ -171,33 +209,45 @@ export default function App() {
 
   // Cart Operations
   const addToCart = (productRecord, quantity = 1) => {
-    const isAvailable = productRecord.availability?.toLowerCase() === 'in stock';
-    if (!isAvailable) {
+    if (!productRecord || !Number.isInteger(quantity) || quantity < 1) {
+      showToast('Invalid product quantity.');
+      return;
+    }
+    if (getActivePrice(productRecord) === null) {
+      showToast('This item has an invalid price and cannot be added.');
+      return;
+    }
+    if (productRecord.availability?.toLowerCase() !== 'in stock') {
       showToast('Selected item is currently out of stock.');
       return;
     }
-
+    const availableStock = getNumericStock(productRecord);
+    const existingItem = cart.find((item) => String(item.product.id) === String(productRecord.id));
+    const nextQuantity = (existingItem?.quantity || 0) + quantity;
+    if (availableStock !== null && nextQuantity > availableStock) {
+      showToast('Requested quantity exceeds available stock.');
+      return;
+    }
     setCart((prev) => {
-      const existingIdx = prev.findIndex((item) => item.product.id === productRecord.id);
+      const existingIdx = prev.findIndex((item) => String(item.product.id) === String(productRecord.id));
       if (existingIdx > -1) {
-        const updated = [...prev];
-        updated[existingIdx].quantity += quantity;
-        return updated;
+        return prev.map((item, index) => index === existingIdx
+          ? { ...item, quantity: item.quantity + quantity }
+          : item);
       }
       return [...prev, { product: productRecord, quantity }];
     });
-
     showToast(`Added ${productRecord.title} to bag`);
   };
 
   const updateCartQuantity = (index, delta) => {
-    setCart((prev) => {
-      const updated = [...prev];
-      const newQty = updated[index].quantity + delta;
-      if (newQty < 1) return prev;
-      updated[index].quantity = newQty;
-      return updated;
-    });
+    setCart((prev) => prev.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const newQty = item.quantity + delta;
+      const availableStock = getNumericStock(item.product);
+      if (!Number.isInteger(newQty) || newQty < 1 || (availableStock !== null && newQty > availableStock)) return item;
+      return { ...item, quantity: newQty };
+    }));
   };
 
   const removeFromCart = (index) => {
@@ -215,6 +265,12 @@ export default function App() {
   const selectedGroupObj = useMemo(() => {
     return productFamilies.find(f => f.groupId === selectedProductGroupId) || productFamilies[0];
   }, [productFamilies, selectedProductGroupId]);
+
+  const selectedVariant = selectedGroupObj?.variants?.find(v => String(v.id) === String(selectedVariantId)) || selectedGroupObj?.primary;
+
+  useEffect(() => {
+    setSelectedVariantId(selectedGroupObj?.variants?.[0]?.id ?? null);
+  }, [selectedGroupObj?.groupId]);
 
   return (
     <div className="h-[100vh] w-full bg-neutral-950 text-neutral-800 flex justify-center font-sans antialiased selection:bg-rose-500 selection:text-white">
@@ -283,6 +339,8 @@ export default function App() {
               family={selectedGroupObj}
               loading={loading}
               onAddToCart={addToCart}
+              selectedVariantId={selectedVariantId}
+              onSelectVariant={setSelectedVariantId}
               onBack={() => navigateTo('catalog')}
               wishlist={wishlist}
               onToggleWishlist={toggleWishlist}
@@ -325,8 +383,9 @@ export default function App() {
 
         {/* BOTTOM NAVIGATION / BOTTOM ACTION BAR - Conditionally Rendered */}
         {currentPage === 'detail' ? (
-          <ProductBottomActionBar 
+          <ProductBottomActionBar
             family={selectedGroupObj}
+            selectedVariant={selectedVariant}
             onAddToCart={addToCart}
           />
         ) : currentPage === 'cart' ? (
@@ -565,8 +624,10 @@ function CatalogPage({ productFamilies, categories, activeCategory, onCategoryCh
     return productFamilies.filter((fam) => {
       const primary = fam.primary;
       const matchesCategory = activeCategory === 'All' || fam.category === activeCategory;
-      const matchesSearch = primary.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            (primary.description && primary.description.toLowerCase().includes(searchQuery.toLowerCase()));
+      const title = typeof primary?.title === 'string' ? primary.title : '';
+      const description = typeof primary?.description === 'string' ? primary.description : '';
+      const query = searchQuery.toLowerCase();
+      const matchesSearch = title.toLowerCase().includes(query) || description.toLowerCase().includes(query);
       return matchesCategory && matchesSearch;
     }).sort((a, b) => {
       const getActivePrice = (item) => (typeof item.sale_price === 'number' && item.sale_price > 0) ? item.sale_price : item.price;
@@ -671,16 +732,14 @@ function CatalogPage({ productFamilies, categories, activeCategory, onCategoryCh
 }
 
 // --- 3. PRODUCT DETAIL PAGE ---
-function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onToggleWishlist }) {
-  if (loading || !family) {
+function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onToggleWishlist, selectedVariantId, onSelectVariant }) {
+  const variants = family?.variants || [];
+  const groupId = family?.groupId;
+  const [selectedImageIdx, setSelectedImageIdx] = useState(0);
+  const currentVariant = variants.find(v => String(v.id) === String(selectedVariantId)) || variants[0] || null;
+  if (loading || !family || !currentVariant) {
     return <div className="p-6 text-center text-xs text-neutral-400">Loading product details...</div>;
   }
-
-  const { variants, groupId } = family;
-  const [selectedVariantId, setSelectedVariantId] = useState(variants[0]?.id);
-  const [selectedImageIdx, setSelectedImageIdx] = useState(0);
-
-  const currentVariant = variants.find(v => v.id === selectedVariantId) || variants[0];
   const isWishlisted = wishlist.includes(groupId);
 
   // Derive gallery images
@@ -775,7 +834,7 @@ function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onT
                   <button
                     key={v.id}
                     onClick={() => {
-                      setSelectedVariantId(v.id);
+                      onSelectVariant(v.id);
                       setSelectedImageIdx(0);
                     }}
                     className={`p-2.5 text-left rounded-lg border text-xs transition-all flex flex-col justify-between ${
@@ -809,16 +868,9 @@ function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onT
         {/* Rich Text Description Section */}
         <div className="border-t border-neutral-900 pt-4 space-y-2">
           <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-300">Description</h4>
-          {currentVariant.rich_text_description ? (
-            <div 
-              className="text-xs text-neutral-300 leading-relaxed space-y-2 font-light border-l-2 border-rose-500 pl-3 py-1 [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4"
-              dangerouslySetInnerHTML={{ __html: sanitizeHtml(currentVariant.rich_text_description) }}
-            />
-          ) : (
-            <p className="text-xs text-neutral-300 leading-relaxed font-light">
-              {currentVariant.description || 'Authentic Divoom product engineered for high performance audio, programmable pixel graphics, and unique desk aesthetic.'}
-            </p>
-          )}
+          <p className="text-xs text-neutral-300 leading-relaxed font-light whitespace-pre-line border-l-2 border-rose-500 pl-3 py-1">
+            {currentVariant.rich_text_description || currentVariant.description || 'Authentic Divoom product engineered for high performance audio, programmable pixel graphics, and unique desk aesthetic.'}
+          </p>
         </div>
       </div>
     </div>
@@ -826,25 +878,23 @@ function ProductDetailPage({ family, loading, onAddToCart, onBack, wishlist, onT
 }
 
 // --- PRODUCT BOTTOM ACTION BAR ---
-function ProductBottomActionBar({ family, onAddToCart }) {
-  const primary = family?.primary;
-  const isInStock = primary?.availability?.toLowerCase() === 'in stock';
-  const activePrice = (typeof primary?.sale_price === 'number' && primary.sale_price > 0)
-    ? primary.sale_price
-    : primary?.price;
+function ProductBottomActionBar({ family, selectedVariant, onAddToCart }) {
+  const product = selectedVariant || family?.primary;
+  const isInStock = product?.availability?.toLowerCase() === 'in stock' && getActivePrice(product) !== null;
+  const activePrice = getActivePrice(product);
 
   return (
     <div className="shrink-0 bg-neutral-900 border-t border-neutral-800/80 px-4 py-3 flex items-center justify-between z-30 shadow-lg">
       <div className="flex flex-col">
         <span className="text-[10px] uppercase tracking-wider text-neutral-400">Total Price</span>
-        <span className="text-sm font-bold text-rose-400">{formatIDR(activePrice)}</span>
+        <span className="text-sm font-bold text-rose-400">{formatIDR(activePrice ?? 0)}</span>
       </div>
       <button
-        onClick={() => onAddToCart(primary, 1)}
+        onClick={() => onAddToCart(product, 1)}
         disabled={!isInStock}
         className={`font-semibold text-xs tracking-widest uppercase py-3 px-6 rounded-lg shadow-lg flex items-center justify-center space-x-2 transition-all ${
-          isInStock 
-            ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950 active:scale-[0.99]' 
+          isInStock
+            ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950 active:scale-[0.99]'
             : 'bg-neutral-800 text-neutral-500 cursor-not-allowed border border-neutral-800'
         }`}
       >
